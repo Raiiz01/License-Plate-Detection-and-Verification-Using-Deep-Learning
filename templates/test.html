@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Plate Detection</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    #videoContainer { position: relative; display: inline-block; max-width: 100%; }
+    video { border: 1px solid #ccc; border-radius: 4px; width: 100%; height: auto; max-height: 480px; }
+    canvas { position: absolute; left: 0; top: 0; pointer-events: none; width: 100%; height: auto; max-height: 480px; }
+    #controls { margin-top: 8px; }
+    #resultCards {
+      width: 380px;
+      max-height: 420px;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      padding: 8px;
+      border-radius: 6px;
+      margin-left: 16px;
+      display: inline-block;
+      vertical-align: top;
+      background: #fafafa;
+    }
+    .card {
+      border-bottom: 1px solid #eee;
+      padding: 8px 6px;
+    }
+    .card h4 { margin: 0; font-size: 16px; }
+    .card p { margin: 2px 0; font-size: 13px; color: #333; }
+    .status { font-weight: bold; }
+    .green { color: green; }
+    .red { color: red; }
+    .orange { color: orange; }
+    #layout {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      max-width: 100%;
+    }
+
+    /* Responsive mobile styles */
+    @media (max-width: 768px) {
+      #layout {
+        flex-direction: column;
+        gap: 16px;
+      }
+      #resultCards {
+        width: 100%;
+        margin-left: 0;
+        max-height: 300px;
+      }
+      #videoContainer {
+        width: 100%;
+      }
+      video, canvas {
+        max-height: none;
+        height: auto;
+      }
+      #controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      #controls label {
+        flex: 1 1 100%;
+        margin-left: 0 !important;
+      }
+      #intervalInput {
+        width: 100%;
+        max-width: 120px;
+      }
+      button {
+        flex: 1 1 auto;
+        min-width: 120px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h2>Live Camera Preview — Bounding Boxes & Result Cards</h2>
+
+  <div id="layout">
+    <div>
+      <div id="videoContainer">
+        <video id="video" width="640" height="480" autoplay muted playsinline></video>
+        <canvas id="overlay" width="640" height="480"></canvas>
+      </div>
+
+      <div id="controls">
+        <button id="startBtn">Start</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <label>
+          Interval (ms):
+          <input id="intervalInput" type="number" value="800" style="width:80px"/>
+        </label>
+      </div>
+    </div>
+
+    <div id="resultCards">
+      <h3>Detections</h3>
+      <div id="cardsContainer"></div>
+    </div>
+  </div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const intervalInput = document.getElementById('intervalInput');
+const cardsContainer = document.getElementById('cardsContainer');
+
+let stream = null;
+let running = false;
+let loopTimer = null;
+
+// start camera (back-facing preferred)
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: 640, height: 480 },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    // match canvas size
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    return true;
+  } catch (err) {
+    alert("Could not access camera: " + err.message);
+    return false;
+  }
+}
+
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  video.pause();
+}
+
+// grab current frame, send to backend and draw boxes on response
+async function processFrame() {
+  if (!running) return;
+  try {
+    // draw video frame to an offscreen canvas and get dataURL
+    const off = document.createElement('canvas');
+    off.width = video.videoWidth;
+    off.height = video.videoHeight;
+    const offCtx = off.getContext('2d');
+    offCtx.drawImage(video, 0, 0, off.width, off.height);
+
+    const dataURL = off.toDataURL('image/jpeg', 0.8);
+
+    const res = await fetch('https://ce3a15ba66fb.ngrok-free.app/live_detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataURL })
+    });
+
+    const payload = await res.json();
+    if (payload.error) {
+      console.error("Server error:", payload.error);
+    } else {
+      drawDetections(payload.detections || []);
+      updateCards(payload.detections || []);
+    }
+
+  } catch (e) {
+    console.error("processFrame error:", e);
+  } finally {
+    // schedule next
+    const interval = Math.max(200, parseInt(intervalInput.value) || 800);
+    loopTimer = setTimeout(processFrame, interval);
+  }
+}
+
+function drawDetections(detections) {
+  // clear
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  detections.forEach(det => {
+    // bounding box
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'lime';
+    ctx.fillStyle = 'lime';
+    ctx.strokeRect(det.x, det.y, det.width, det.height);
+
+    // label text (plate + box_conf)
+    const label = `${det.plate_text || 'Plate'} (${det.box_conf}%)`;
+    ctx.font = '14px Arial';
+    ctx.fillStyle = 'lime';
+    // draw background for text for readability
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillRect(det.x, Math.max(0, det.y - 20), textWidth + 6, 18);
+    ctx.fillStyle = 'black';
+    ctx.fillText(label, det.x + 3, det.y - 5);
+  });
+}
+
+function clearCards() {
+  cardsContainer.innerHTML = '';
+}
+
+function updateCards(detections) {
+  clearCards();
+
+  if (!detections.length) {
+    cardsContainer.innerHTML = '<p>No plates detected</p>';
+    return;
+  }
+
+  detections.forEach((d) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const plate = d.plate_text || 'Unknown';
+    const boxConf = d.box_conf !== undefined ? d.box_conf : '-';
+    const ocrConf = d.ocr_conf !== undefined ? d.ocr_conf : '-';
+
+    let statusText = 'NOT VERIFIED';
+    let statusClass = 'red';
+    if (d.plate_info) {
+      const st = (d.plate_info.vehicle_status || d.plate_info.vehicle_status === 0) ? d.plate_info.vehicle_status : null;
+      if (st) {
+        if (String(st).toLowerCase().includes('expired') || String(st).toLowerCase().includes('wanted')) {
+          statusText = 'EXPIRED / WANTED';
+          statusClass = 'orange';
+        } else {
+          statusText = 'MATCH FOUND';
+          statusClass = 'green';
+        }
+      } else {
+        statusText = 'MATCH FOUND';
+        statusClass = 'green';
+      }
+    } else {
+      statusText = 'NOT FOUND';
+      statusClass = 'red';
+    }
+
+    card.innerHTML = `
+      <h4>${plate} <span class="status ${statusClass}" style="float:right;">${statusText}</span></h4>
+      <p><strong>Box conf:</strong> ${boxConf}% &nbsp; <strong>OCR conf:</strong> ${ocrConf}%</p>
+    `;
+
+    if (d.plate_info) {
+      const owner = d.plate_info.owner_name || '-';
+      const type = d.plate_info.vehicle_type || '-';
+      const reg = d.plate_info.registration_date || '-';
+      const vehStatus = d.plate_info.vehicle_status || '-';
+      const details = document.createElement('div');
+      details.innerHTML = `
+        <p><strong>Owner:</strong> ${owner}</p>
+        <p><strong>Vehicle:</strong> ${type}</p>
+        <p><strong>Reg Date:</strong> ${reg}</p>
+        <p><strong>DB Status:</strong> ${vehStatus}</p>
+      `;
+      card.appendChild(details);
+    }
+
+    cardsContainer.appendChild(card);
+  });
+}
+
+startBtn.addEventListener('click', async () => {
+  const ok = await startCamera();
+  if (!ok) return;
+  running = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  processFrame();
+});
+
+stopBtn.addEventListener('click', () => {
+  running = false;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  clearTimeout(loopTimer);
+  stopCamera();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  clearCards();
+});
+</script>
+</body>
+</html>

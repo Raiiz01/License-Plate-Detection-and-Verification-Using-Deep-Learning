@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Plate Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        #refreshIcon {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 15px;
+            background-color: transparent;
+            border: none;
+            cursor: pointer;
+        }
+        #refreshIcon:hover {
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <button id="refreshIcon" onclick="location.reload();" title="Refresh Page">🔄</button>
+
+    <h1>License Plate Detection and Verification System</h1>
+
+    <button id="scanBtn">Scan License Plate</button>
+
+    <!-- Camera view -->
+    <div id="camera" style="display:none;">
+        <video id="video" width="400" height="300" autoplay></video>
+        <button id="captureBtn">Capture</button>
+    </div>
+
+    <!-- Result Section -->
+    <h2>Processed Image with Detected License Plates</h2>
+    <img id="resultImage" width="400" alt="Processed Image">
+
+    <p id="detectedText"></p>
+
+    <h2>License Plate Information</h2>
+    <div id="plateInfo"></div>
+
+    <script>
+        const scanBtn = document.getElementById('scanBtn');
+        const camera = document.getElementById('camera');
+        const video = document.getElementById('video');
+        const captureBtn = document.getElementById('captureBtn');
+
+        scanBtn.addEventListener('click', function () {
+            camera.style.display = 'block';
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { exact: "environment" } } 
+            })
+            .then(function (stream) {
+                video.srcObject = stream;
+            })
+            .catch(function (error) {
+                console.log("Error accessing the webcam: ", error);
+                alert("Could not access back camera. Please make sure your device has one and allow camera access.");
+            });
+        });
+
+        captureBtn.addEventListener('click', function () {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const imageData = canvas.toDataURL('image/jpeg');
+            console.log("Captured image data:", imageData);
+
+            fetch('https://44360723072a.ngrok-free.app/scan', {
+                method: 'POST',
+                body: JSON.stringify({ image: imageData }),
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("Data received from backend:", data);
+                document.getElementById('resultImage').src = data.result_image;
+                document.getElementById('detectedText').textContent = data.detected_text;
+
+                if (data.plate_info) {
+                    document.getElementById('plateInfo').innerHTML = `
+                        <p><strong>Matched Plate:</strong> ${data.plate_info[1]}</p>
+                        <p><strong>Owner Name:</strong> ${data.plate_info[2]}</p>
+                        <p><strong>Vehicle Type:</strong> ${data.plate_info[3]}</p>
+                        <p><strong>Registration Date:</strong> ${data.plate_info[4]}</p>
+                        <p><strong>vehicle_status:</strong> ${data.plate_info[5]}</p>
+                    `;
+                } else {
+                    document.getElementById('plateInfo').textContent = 'No information found for this plate.';
+                }
+            })
+            .catch(error => {
+                console.log("Error sending data to backend:", error);
+            });
+        });
+    </script>
+
+    <!-- Footer -->
+    <footer>
+        <p style="color: black">License plate Detection & Verification System for Somalia vehicles &copy; copyright-2025 Simad University</p>
+    </footer>
+</body>
+</html>
